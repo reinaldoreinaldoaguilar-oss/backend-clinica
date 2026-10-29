@@ -1,0 +1,18 @@
+[
+    {
+        "nombre_servicio": "Consulta General de Urología",
+        "descripcion": "Evaluación médica inicial, revisión de exámenes y diagnóstico de vías urinarias."
+    },
+    {
+        "nombre_servicio": "Chequeo Prostático Preventivo",
+        "descripcion": "Examen físico y de laboratorio (Antígeno Prostático) para prevención de cáncer."
+    },
+    {
+        "nombre_servicio": "Tratamiento de Litiasis Renal",
+        "descripcion": "Diagnóstico y manejo de cálculos renales (piedras en los riñones)."
+    },
+    {
+        "nombre_servicio": "Cirugía Urológica",
+        "descripcion": "Intervención quirúrgica especializada (requiere evaluación previa)."
+    }
+]
