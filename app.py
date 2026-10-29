@@ -10,8 +10,18 @@ from flask_jwt_extended import JWTManager, create_access_token, jwt_required
 app = Flask(__name__)
 CORS(app)
 
+# ==========================================
 # Configuración de Base de Datos y Seguridad
-app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql+psycopg2://postgres:Argentina*12@localhost:5432/dr_lisandro_db'
+# ==========================================
+
+# 1. Obtenemos la URL de la base de datos desde Render (o usamos la local si no estamos en Render)
+database_url = os.environ.get('DATABASE_URL', 'postgresql+psycopg2://postgres:Argentina*12@localhost:5432/dr_lisandro_db')
+
+# 2. Corrección automática: Render da URLs con "postgres://", pero SQLAlchemy necesita "postgresql://"
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = 'secreto_medico_super_seguro_2026' # Llave maestra para los tokens
 
@@ -175,4 +185,6 @@ with app.app_context():
     db.session.commit()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Render asigna un puerto dinámico mediante la variable de entorno PORT. Si no existe, usa 5000.
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port)
