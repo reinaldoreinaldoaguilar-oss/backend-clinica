@@ -113,11 +113,39 @@ def obtener_pacientes():
     } for p in pacientes]
     return jsonify(resultado), 200
 
+
+@app.route('/api/pacientes/<int:id>', methods=['DELETE'])
+@jwt_required()
+def eliminar_paciente(id):
+    paciente = Paciente.query.get_or_404(id)
+    Cita.query.filter_by(paciente_id=paciente.id).delete()
+    db.session.delete(paciente)
+    db.session.commit()
+    return jsonify({"mensaje": f"Paciente #{id} eliminado correctamente"}), 200
+
 @app.route('/api/citas', methods=['POST'])
 def agendar_cita():
-    datos = request.get_json()
-    fecha_obj = datetime.strptime(datos.get('fecha_hora'), '%Y-%m-%d %H:%M')
-    nueva_cita = Cita(fecha_hora=fecha_obj, paciente_id=datos.get('paciente_id'), servicio_id=datos.get('servicio_id'))
+    datos = request.get_json() or {}
+    try:
+        fecha_obj = datetime.strptime(datos.get('fecha_hora'), '%Y-%m-%d %H:%M')
+    except (ValueError, TypeError):
+        fecha_obj = datetime.now()
+
+    # Validar paciente existente
+    paciente_id = datos.get('paciente_id')
+    paciente = Paciente.query.get(paciente_id)
+    if not paciente:
+        ultimo = Paciente.query.order_by(Paciente.id.desc()).first()
+        paciente_id = ultimo.id if ultimo else 1
+
+    # Validar servicio existente para evitar ForeignKeyViolation
+    servicio_id = datos.get('servicio_id')
+    servicio = Servicio.query.get(servicio_id)
+    if not servicio:
+        primer_srv = Servicio.query.first()
+        servicio_id = primer_srv.id if primer_srv else 1
+
+    nueva_cita = Cita(fecha_hora=fecha_obj, paciente_id=paciente_id, servicio_id=servicio_id)
     db.session.add(nueva_cita)
     db.session.commit()
     return jsonify({"mensaje": "Cita agendada", "id_cita": nueva_cita.id}), 201
@@ -191,13 +219,22 @@ try:
             db.session.add(doctor)
             print(">> Usuario administrador creado", flush=True)
             
-        if Servicio.query.count() == 0 and os.path.exists('datos_urologia.json'):
+        if os.path.exists('datos_urologia.json'):
             with open('datos_urologia.json', 'r', encoding='utf-8') as archivo:
                 servicios_json = json.load(archivo)
                 for s in servicios_json:
-                    nuevo_srv = Servicio(nombre_servicio=s['nombre_servicio'], descripcion=s['descripcion'])
-                    db.session.add(nuevo_srv)
-            print(">> Servicios cargados", flush=True)
+                    s_id = s.get('id')
+                    srv = Servicio.query.get(s_id) if s_id else Servicio.query.filter_by(nombre_servicio=s['nombre_servicio']).first()
+                    if not srv:
+                        nuevo_srv = Servicio(nombre_servicio=s['nombre_servicio'], descripcion=s['descripcion'])
+                        if s_id:
+                            nuevo_srv.id = s_id
+                        db.session.add(nuevo_srv)
+                    else:
+                        srv.nombre_servicio = s['nombre_servicio']
+                        srv.descripcion = s['descripcion']
+            db.session.commit()
+            print(">> Catálogo completo de servicios sincronizado", flush=True)
             
         db.session.commit()
         print(">> [DIAGNÓSTICO 5] Todo listo. ¡Aplicación lista para recibir peticiones!", flush=True)

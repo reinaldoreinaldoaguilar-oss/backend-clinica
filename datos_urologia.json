@@ -1,18 +1,37 @@
 [
-    {
-        "nombre_servicio": "Consulta General de Urología",
-        "descripcion": "Evaluación médica inicial, revisión de exámenes y diagnóstico de vías urinarias."
-    },
-    {
-        "nombre_servicio": "Chequeo Prostático Preventivo",
-        "descripcion": "Examen físico y de laboratorio (Antígeno Prostático) para prevención de cáncer."
-    },
-    {
-        "nombre_servicio": "Tratamiento de Litiasis Renal",
-        "descripcion": "Diagnóstico y manejo de cálculos renales (piedras en los riñones)."
-    },
-    {
-        "nombre_servicio": "Cirugía Urológica",
-        "descripcion": "Intervención quirúrgica especializada (requiere evaluación previa)."
-    }
+  {
+    "id": 1,
+    "nombre_servicio": "Evaluación Urológica Completa + 3 Ecos (Renal, Vesical, Prostático)",
+    "descripcion": "Protocolo insignia del Dr. Lisandro Márquez: evaluación clínica minuciosa más tres ecografías en tiempo real (Renal, Vesical y Prostática) en la misma consulta."
+  },
+  {
+    "id": 2,
+    "nombre_servicio": "Chequeo Prostático Preventivo y Antígeno (PSA)",
+    "descripcion": "Detección precoz de cáncer de próstata y crecimiento prostático benigno. Exploración clínica suave y correlación con el antígeno prostático específico."
+  },
+  {
+    "id": 3,
+    "nombre_servicio": "Tratamiento de Litiasis Renal (Cálculos por Láser)",
+    "descripcion": "Pulverización endoscópica de piedras en riñones, uréteres y vejiga mediante Láser Holmium de última generación sin heridas en la piel."
+  },
+  {
+    "id": 4,
+    "nombre_servicio": "Uretrocistoscopia y Vías Urinarias",
+    "descripcion": "Estudio visual endoscópico de alta definición para diagnóstico certero de hematuria (sangre en la orina), estrecheces uretrales y afecciones vesicales."
+  },
+  {
+    "id": 5,
+    "nombre_servicio": "Salud Sexual Masculina y Andrología",
+    "descripcion": "Abordaje científico, confidencial y discreto de disfunción eréctil, déficit de testosterona, eyaculación precoz y curvatura peneana (Peyronie)."
+  },
+  {
+    "id": 6,
+    "nombre_servicio": "Cirugía Urológica Ambulatoria (Hidrocele, Varicocele y Vasectomía)",
+    "descripcion": "Intervenciones ambulatorias con anestesia local o sedación suave, pronta recuperación y reincorporación a la rutina cotidiana en 48 horas."
+  },
+  {
+    "id": 7,
+    "nombre_servicio": "Rehabilitación de Suelo Pélvico e Incontinencia",
+    "descripcion": "Tratamiento avanzado para la debilidad muscular del piso pélvico e incontinencia urinaria en hombres y mujeres mediante terapias no invasivas."
+  }
 ]
