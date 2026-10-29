@@ -97,6 +97,22 @@ def registrar_paciente():
     db.session.commit()
     return jsonify({"mensaje": "Paciente registrado", "id": nuevo_paciente.id}), 201
 
+# --- DIRECTORIO DE PACIENTES (Protegido con Token) ---
+@app.route('/api/pacientes', methods=['GET'])
+@jwt_required()
+def obtener_pacientes():
+    pacientes = Paciente.query.order_by(Paciente.id.asc()).all()
+    resultado = [{
+        "id": p.id,
+        "nombre": p.nombre,
+        "telefono": p.telefono or "",
+        "correo": p.correo or "",
+        "total_citas": len(p.citas),
+        "ultima_cita": p.citas[-1].fecha_hora.strftime("%Y-%m-%d %H:%M") if p.citas else None,
+        "estado_ultima_cita": p.citas[-1].estado if p.citas else "Sin cita activa"
+    } for p in pacientes]
+    return jsonify(resultado), 200
+
 @app.route('/api/citas', methods=['POST'])
 def agendar_cita():
     datos = request.get_json()
