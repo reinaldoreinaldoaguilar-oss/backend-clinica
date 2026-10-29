@@ -1,11 +1,14 @@
 import json
 import os
+import sys
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
 from flask_cors import CORS
 from datetime import datetime
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required
+
+print(">> [DIAGNÓSTICO 1] Iniciando servidor Flask...", flush=True)
 
 app = Flask(__name__)
 CORS(app)
@@ -14,16 +17,19 @@ CORS(app)
 # Configuración de Base de Datos y Seguridad
 # ==========================================
 
-# 1. Obtenemos la URL de la base de datos desde Render (o usamos la local si no estamos en Render)
-database_url = os.environ.get('DATABASE_URL', 'postgresql+psycopg2://postgres:Argentina*12@localhost:5432/dr_lisandro_db')
+database_url = os.environ.get('DATABASE_URL')
 
-# 2. Corrección automática: Render da URLs con "postgres://", pero SQLAlchemy necesita "postgresql://"
-if database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+if not database_url:
+    print(">> [DIAGNÓSTICO 2] ADVERTENCIA: No se encontró DATABASE_URL en Render. Usando localhost...", flush=True)
+    database_url = 'postgresql+psycopg2://postgres:Argentina*12@localhost:5432/dr_lisandro_db'
+else:
+    print(">> [DIAGNÓSTICO 2] EXITO: Variable DATABASE_URL detectada en Render.", flush=True)
+    if database_url.startswith("postgres://"):
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['JWT_SECRET_KEY'] = 'secreto_medico_super_seguro_2026' # Llave maestra para los tokens
+app.config['JWT_SECRET_KEY'] = 'secreto_medico_super_seguro_2026'
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
@@ -36,7 +42,7 @@ class Usuario(db.Model):
     __tablename__ = 'usuario'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False) # Contraseña encriptada
+    password = db.Column(db.String(255), nullable=False)
 
 class Paciente(db.Model):
     __tablename__ = 'paciente'
@@ -69,20 +75,15 @@ class Cita(db.Model):
 def index():
     return jsonify({"mensaje": "API Segura Dr. Lisandro V2.0 funcionando"})
 
-# --- SEGURIDAD: LOGIN DEL DOCTOR ---
 @app.route('/api/login', methods=['POST'])
 def login():
     datos = request.get_json()
     usuario = Usuario.query.filter_by(username=datos.get('username')).first()
-    
-    # Verifica que el usuario exista y la contraseña coincida
     if usuario and check_password_hash(usuario.password, datos.get('password')):
         token_acceso = create_access_token(identity=usuario.username)
         return jsonify({"token": token_acceso, "mensaje": "Login exitoso"}), 200
-        
     return jsonify({"mensaje": "Credenciales incorrectas"}), 401
 
-# --- RUTAS PÚBLICAS (El paciente no necesita token para esto) ---
 @app.route('/api/servicios', methods=['GET'])
 def obtener_servicios():
     servicios = Servicio.query.all()
@@ -105,7 +106,6 @@ def agendar_cita():
     db.session.commit()
     return jsonify({"mensaje": "Cita agendada", "id_cita": nueva_cita.id}), 201
 
-# --- RUTAS PROTEGIDAS (Solo el Dr. con Token puede gestionar citas) ---
 @app.route('/api/citas', methods=['GET'])
 @jwt_required()
 def obtener_citas():
@@ -162,30 +162,37 @@ def obtener_estadisticas():
     }), 200
 
 # ==========================================
-# 3. CARGA AUTOMÁTICA AL INICIAR
+# 3. CARGA AUTOMÁTICA AL INICIAR (CON MANEJO DE ERRORES)
 # ==========================================
-with app.app_context():
-    db.create_all()
-    
-    # 1. Crear el usuario del doctor si no existe
-    if not Usuario.query.filter_by(username='admin').first():
-        doctor = Usuario(username='admin', password=generate_password_hash('admin123'))
-        db.session.add(doctor)
-        print(">> Usuario administrador creado (admin / admin123)")
+try:
+    with app.app_context():
+        print(">> [DIAGNÓSTICO 3] Intentando conectar a la base de datos y crear tablas...", flush=True)
+        db.create_all()
+        print(">> [DIAGNÓSTICO 4] Tablas verificadas correctamente.", flush=True)
         
-    # 2. Cargar servicios desde el JSON si la tabla está vacía
-    if Servicio.query.count() == 0 and os.path.exists('datos_urologia.json'):
-        with open('datos_urologia.json', 'r', encoding='utf-8') as archivo:
-            servicios_json = json.load(archivo)
-            for s in servicios_json:
-                nuevo_srv = Servicio(nombre_servicio=s['nombre_servicio'], descripcion=s['descripcion'])
-                db.session.add(nuevo_srv)
-        print(">> Servicios médicos cargados automáticamente desde JSON")
-        
-    db.session.commit()
+        if not Usuario.query.filter_by(username='admin').first():
+            doctor = Usuario(username='admin', password=generate_password_hash('admin123'))
+            db.session.add(doctor)
+            print(">> Usuario administrador creado", flush=True)
+            
+        if Servicio.query.count() == 0 and os.path.exists('datos_urologia.json'):
+            with open('datos_urologia.json', 'r', encoding='utf-8') as archivo:
+                servicios_json = json.load(archivo)
+                for s in servicios_json:
+                    nuevo_srv = Servicio(nombre_servicio=s['nombre_servicio'], descripcion=s['descripcion'])
+                    db.session.add(nuevo_srv)
+            print(">> Servicios cargados", flush=True)
+            
+        db.session.commit()
+        print(">> [DIAGNÓSTICO 5] Todo listo. ¡Aplicación lista para recibir peticiones!", flush=True)
+
+except Exception as e:
+    print(f"\n======================================", flush=True)
+    print(f"!!! ERROR FATAL AL CONECTAR A LA BD !!!", flush=True)
+    print(f"Detalle del error: {e}", flush=True)
+    print(f"======================================\n", flush=True)
+    sys.exit(1) # Forzamos cierre inmediato con el error impreso
 
 if __name__ == '__main__':
-    # Render asigna un puerto dinámico mediante la variable de entorno PORT. Si no existe, usa 5000.
     port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
-    
