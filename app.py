@@ -1140,6 +1140,128 @@ def gestionar_bloqueos():
         "sede_id": b.sede_id
     } for b in bloqueos]), 200
 
+@app.route('/api/doctor/horarios', methods=['GET', 'POST'])
+@jwt_required()
+def gestionar_horarios():
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+
+    if request.method == 'POST':
+        datos = request.get_json() or {}
+        sede_id = datos.get('sede_id')
+        dia_semana = datos.get('dia_semana')
+        hora_inicio = datos.get('hora_inicio')
+        hora_fin = datos.get('hora_fin')
+        intervalo = datos.get('intervalo_minutos', 45)
+
+        if sede_id is None or dia_semana is None or not hora_inicio or not hora_fin:
+            return jsonify({"mensaje": "sede_id, dia_semana, hora_inicio y hora_fin son requeridos"}), 400
+
+        existente = HorarioDoctor.query.filter_by(
+            doctor_id=usuario.id, sede_id=sede_id, dia_semana=dia_semana
+        ).first()
+
+        try:
+            h_ini = time(*[int(x) for x in hora_inicio.split(':')])
+            h_fin = time(*[int(x) for x in hora_fin.split(':')])
+        except (ValueError, TypeError):
+            return jsonify({"mensaje": "Formato de hora inválido. Usar HH:MM"}), 400
+
+        if existente:
+            existente.hora_inicio = h_ini
+            existente.hora_fin = h_fin
+            existente.intervalo_minutos = intervalo
+            existente.activo = True
+            msg = "Horario actualizado"
+        else:
+            nuevo = HorarioDoctor(
+                doctor_id=usuario.id,
+                sede_id=sede_id,
+                dia_semana=dia_semana,
+                hora_inicio=h_ini,
+                hora_fin=h_fin,
+                intervalo_minutos=intervalo,
+                activo=True
+            )
+            db.session.add(nuevo)
+            msg = "Horario creado"
+
+        db.session.commit()
+        return jsonify({"mensaje": msg}), 201
+
+    horarios = HorarioDoctor.query.filter_by(doctor_id=usuario.id).all()
+    dias_nombre = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+    return jsonify([{
+        "id": h.id,
+        "sede_id": h.sede_id,
+        "sede_nombre": h.sede.nombre if h.sede else "",
+        "dia_semana": h.dia_semana,
+        "dia_nombre": dias_nombre[h.dia_semana] if h.dia_semana < 7 else "?",
+        "hora_inicio": h.hora_inicio.strftime('%H:%M'),
+        "hora_fin": h.hora_fin.strftime('%H:%M'),
+        "intervalo_minutos": h.intervalo_minutos,
+        "activo": h.activo
+    } for h in horarios]), 200
+
+@app.route('/api/doctor/horarios/<int:id>', methods=['DELETE'])
+@jwt_required()
+def eliminar_horario(id):
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+    h = HorarioDoctor.query.get_or_404(id)
+    db.session.delete(h)
+    db.session.commit()
+    return jsonify({"mensaje": "Horario eliminado"}), 200
+
+@app.route('/api/admin/sedes', methods=['POST'])
+@jwt_required()
+def crear_sede():
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+    datos = request.get_json() or {}
+    nueva = Sede(
+        nombre=datos.get('nombre', ''),
+        clinica=datos.get('clinica', ''),
+        ciudad=datos.get('ciudad', ''),
+        direccion=datos.get('direccion', ''),
+        horarios_texto=datos.get('horarios_texto', ''),
+        activa=True
+    )
+    db.session.add(nueva)
+    db.session.commit()
+    return jsonify({"mensaje": "Sede creada", "id": nueva.id}), 201
+
+@app.route('/api/admin/sedes/<int:id>', methods=['PUT'])
+@jwt_required()
+def actualizar_sede(id):
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+    sede = Sede.query.get_or_404(id)
+    datos = request.get_json() or {}
+    if 'nombre' in datos: sede.nombre = datos['nombre']
+    if 'clinica' in datos: sede.clinica = datos['clinica']
+    if 'ciudad' in datos: sede.ciudad = datos['ciudad']
+    if 'direccion' in datos: sede.direccion = datos['direccion']
+    if 'horarios_texto' in datos: sede.horarios_texto = datos['horarios_texto']
+    if 'activa' in datos: sede.activa = datos['activa']
+    db.session.commit()
+    return jsonify({"mensaje": "Sede actualizada"}), 200
+
+@app.route('/api/admin/sedes/<int:id>', methods=['DELETE'])
+@jwt_required()
+def eliminar_sede(id):
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+    sede = Sede.query.get_or_404(id)
+    sede.activa = False
+    db.session.commit()
+    return jsonify({"mensaje": "Sede desactivada"}), 200
+
 @app.route('/api/doctor/bloqueos/<int:id>', methods=['DELETE'])
 @jwt_required()
 def eliminar_bloqueo(id):
