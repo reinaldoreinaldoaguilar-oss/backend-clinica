@@ -1193,6 +1193,8 @@ def eliminar_cita_definitiva(id):
         return jsonify({"mensaje": "Acceso no autorizado"}), 403
 
     cita = Cita.query.get_or_404(id)
+    Notificacion.query.filter_by(cita_id=cita.id).delete()
+    HistorialCita.query.filter_by(cita_id=cita.id).delete()
     db.session.delete(cita)
     db.session.commit()
     return jsonify({"mensaje": "Cita eliminada de la base de datos"}), 200
@@ -1510,25 +1512,85 @@ def obtener_directorio_pacientes():
 
     return jsonify(resultado), 200
 
-@app.route('/api/pacientes/<int:id>', methods=['DELETE'])
+@app.route('/api/pacientes/<id>', methods=['DELETE'])
+@app.route('/api/pacientes/<int:numeric_id>', methods=['DELETE'])
 @jwt_required()
-def eliminar_paciente_doctor(id):
+def eliminar_paciente_doctor(id=None, numeric_id=None):
+    target_id = id if id is not None else str(numeric_id)
     usuario = obtener_usuario_actual()
     if not (usuario and usuario.rol in ['doctor', 'administrador']):
         return jsonify({"mensaje": "Acceso no autorizado"}), 403
 
-    p = Usuario.query.get(id)
-    if p:
-        Cita.query.filter_by(paciente_id=p.id).delete()
-        db.session.delete(p)
+    target_str = str(target_id).strip()
+    leg_id = None
+    u_id = None
+
+    if target_str.startswith('leg_'):
+        try:
+            leg_id = int(target_str.replace('leg_', ''))
+        except ValueError:
+            pass
     else:
-        leg = Paciente.query.get(id)
+        try:
+            u_id = int(target_str)
+        except ValueError:
+            pass
+
+    encontrado = False
+
+    # 1. Si es ID legacy (ej. leg_14)
+    if leg_id:
+        leg = Paciente.query.get(leg_id)
         if leg:
-            Cita.query.filter_by(legacy_paciente_id=leg.id).delete()
+            citas_l = Cita.query.filter_by(legacy_paciente_id=leg.id).all()
+            for c in citas_l:
+                Notificacion.query.filter_by(cita_id=c.id).delete()
+                HistorialCita.query.filter_by(cita_id=c.id).delete()
+                db.session.delete(c)
             db.session.delete(leg)
+            encontrado = True
+
+    # 2. Si es ID numérico de Usuario o Paciente
+    if not encontrado and u_id:
+        u = Usuario.query.get(u_id)
+        if u:
+            citas_u = Cita.query.filter_by(paciente_id=u.id).all()
+            for c in citas_u:
+                Notificacion.query.filter_by(cita_id=c.id).delete()
+                HistorialCita.query.filter_by(cita_id=c.id).delete()
+                db.session.delete(c)
+            Notificacion.query.filter_by(usuario_id=u.id).delete()
+            HistorialCita.query.filter_by(modificado_por=u.id).update({'modificado_por': None})
+            if u.perfil:
+                db.session.delete(u.perfil)
+            IdentidadFederada.query.filter_by(usuario_id=u.id).delete()
+            if u.correo:
+                leg_cor = Paciente.query.filter_by(correo=u.correo).first()
+                if leg_cor:
+                    citas_l2 = Cita.query.filter_by(legacy_paciente_id=leg_cor.id).all()
+                    for c2 in citas_l2:
+                        Notificacion.query.filter_by(cita_id=c2.id).delete()
+                        HistorialCita.query.filter_by(cita_id=c2.id).delete()
+                        db.session.delete(c2)
+                    db.session.delete(leg_cor)
+            db.session.delete(u)
+            encontrado = True
+        else:
+            leg2 = Paciente.query.get(u_id)
+            if leg2:
+                citas_l = Cita.query.filter_by(legacy_paciente_id=leg2.id).all()
+                for c in citas_l:
+                    Notificacion.query.filter_by(cita_id=c.id).delete()
+                    HistorialCita.query.filter_by(cita_id=c.id).delete()
+                    db.session.delete(c)
+                db.session.delete(leg2)
+                encontrado = True
+
+    if not encontrado:
+        return jsonify({"mensaje": f"Paciente #{target_id} no encontrado"}), 404
 
     db.session.commit()
-    return jsonify({"mensaje": f"Paciente #{id} eliminado correctamente"}), 200
+    return jsonify({"mensaje": f"Paciente #{target_id} eliminado exitosamente de la base de datos"}), 200
 
 @app.route('/api/estadisticas', methods=['GET'])
 @jwt_required()
