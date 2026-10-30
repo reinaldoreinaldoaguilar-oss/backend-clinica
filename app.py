@@ -212,7 +212,7 @@ def verificar_google_id_token(credential):
             parts = credential.split('_', 2)
             raw_payload = parts[-1]
             data = json.loads(base64.b64decode(raw_payload).decode('utf-8'))
-            user_email = data.get('email', 'reinaldoreinaldoaguilar@gmail.com')
+            user_email = data.get('email', 'paciente@gmail.com')
             user_name = data.get('name') or user_email.split('@')[0].capitalize()
             return {
                 'iss': 'https://accounts.google.com',
