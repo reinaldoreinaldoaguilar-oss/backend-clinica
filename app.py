@@ -632,126 +632,138 @@ def agendar_cita():
     Registra una cita médica con protección contra doble reserva (carreras de concurrencia).
     Puede ser creada por un paciente autenticado mediante Google o provisionalmente.
     """
-    usuario_actual = obtener_usuario_actual()
-    datos = request.get_json() or {}
-
-    fecha_hora_str = datos.get('fecha_hora') # 'YYYY-MM-DD HH:MM'
-    servicio_id = datos.get('servicio_id')
-    sede_id = datos.get('sede_id')
-    sintomas = datos.get('sintomas') or datos.get('notas')
-
-    if not fecha_hora_str:
-        return jsonify({"mensaje": "Fecha y hora requeridas"}), 400
-
     try:
-        fecha_obj = datetime.strptime(fecha_hora_str, '%Y-%m-%d %H:%M')
-    except ValueError:
-        return jsonify({"mensaje": "Formato de fecha inválido. Usar YYYY-MM-DD HH:MM"}), 400
+        usuario_actual = obtener_usuario_actual()
+        datos = request.get_json() or {}
 
-    servicio = Servicio.query.get(servicio_id)
-    if not servicio:
-        servicio = Servicio.query.first()
-        servicio_id = servicio.id if servicio else 1
+        fecha_hora_str = datos.get('fecha_hora') # 'YYYY-MM-DD HH:MM'
+        servicio_id = datos.get('servicio_id')
+        sede_id = datos.get('sede_id')
+        sintomas = datos.get('sintomas') or datos.get('notas')
 
-    duracion = servicio.duracion_minutos if servicio and servicio.duracion_minutos else 45
-    fecha_fin_obj = fecha_obj + timedelta(minutes=duracion)
+        if not fecha_hora_str:
+            return jsonify({"mensaje": "Fecha y hora requeridas"}), 400
 
-    doctor_master = Usuario.query.filter(Usuario.rol.in_(['doctor', 'administrador'])).first()
-    doctor_id = doctor_master.id if doctor_master else 1
+        try:
+            fecha_obj = datetime.strptime(fecha_hora_str, '%Y-%m-%d %H:%M')
+        except ValueError:
+            return jsonify({"mensaje": "Formato de fecha inválido. Usar YYYY-MM-DD HH:MM"}), 400
 
-    # 1. VERIFICACIÓN ATÓMICA DE NO SOLAPAMIENTO
-    citas_solapadas = Cita.query.filter(
-        Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada']),
-        Cita.fecha_hora < fecha_fin_obj,
-        or_(
-            Cita.fecha_hora_fin > fecha_obj,
-            and_(Cita.fecha_hora_fin == None, Cita.fecha_hora + timedelta(minutes=45) > fecha_obj)
+        servicio = Servicio.query.get(servicio_id)
+        if not servicio:
+            servicio = Servicio.query.first()
+            servicio_id = servicio.id if servicio else 1
+
+        duracion = servicio.duracion_minutos if servicio and servicio.duracion_minutos else 45
+        fecha_fin_obj = fecha_obj + timedelta(minutes=duracion)
+
+        doctor_master = Usuario.query.filter(Usuario.rol.in_(['doctor', 'administrador'])).first()
+        doctor_id = doctor_master.id if doctor_master else 1
+
+        # 1. VERIFICACIÓN ATÓMICA DE NO SOLAPAMIENTO
+        citas_solapadas = Cita.query.filter(
+            Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada']),
+            Cita.fecha_hora < fecha_fin_obj,
+            or_(
+                Cita.fecha_hora_fin > fecha_obj,
+                and_(Cita.fecha_hora_fin == None, Cita.fecha_hora + timedelta(minutes=45) > fecha_obj)
+            )
+        ).first()
+
+        if citas_solapadas:
+            return jsonify({
+                "mensaje": "El turno seleccionado acaba de ser reservado por otro paciente. Por favor selecciona otro horario.",
+                "error_codigo": "SLOT_CONFLICT"
+            }), 409
+
+        # Verificar bloqueos
+        bloqueo = BloqueoAgenda.query.filter(
+            BloqueoAgenda.fecha_inicio < fecha_fin_obj,
+            BloqueoAgenda.fecha_fin > fecha_obj
+        ).first()
+
+        if bloqueo:
+            return jsonify({
+                "mensaje": f"El turno seleccionado no está disponible: {bloqueo.motivo or 'Bloqueo médico'}",
+                "error_codigo": "SLOT_BLOCKED"
+            }), 409
+
+        # 2. Asignar paciente
+        paciente_user_id = None
+        if usuario_actual:
+            paciente_user_id = usuario_actual.id
+            if datos.get('telefono') and usuario_actual.perfil:
+                usuario_actual.perfil.telefono = datos.get('telefono').strip()
+        else:
+            # Modo provisional: registrar en legacy Paciente
+            nombre = datos.get('nombre') or datos.get('nombre_paciente') or 'Paciente Invitado'
+            telefono = datos.get('telefono') or ''
+            correo = datos.get('correo') or datos.get('correo_paciente') or ''
+            leg = Paciente(nombre=nombre, telefono=telefono, correo=correo)
+            db.session.add(leg)
+            db.session.flush()
+
+        codigo_cita = f"CIT-{uuid.uuid4().hex[:6].upper()}"
+
+        nueva_cita = Cita(
+            codigo_cita=codigo_cita,
+            fecha_hora=fecha_obj,
+            fecha_hora_fin=fecha_fin_obj,
+            estado='pendiente',
+            paciente_id=paciente_user_id,
+            doctor_id=doctor_id,
+            servicio_id=servicio_id,
+            sede_id=sede_id,
+            sintomas_paciente=sintomas,
+            creado_por=paciente_user_id or doctor_id
         )
-    ).first()
 
-    if citas_solapadas:
-        return jsonify({
-            "mensaje": "El turno seleccionado acaba de ser reservado por otro paciente. Por favor selecciona otro horario.",
-            "error_codigo": "SLOT_CONFLICT"
-        }), 409
-
-    # Verificar bloqueos
-    bloqueo = BloqueoAgenda.query.filter(
-        BloqueoAgenda.fecha_inicio < fecha_fin_obj,
-        BloqueoAgenda.fecha_fin > fecha_obj
-    ).first()
-
-    if bloqueo:
-        return jsonify({
-            "mensaje": f"El turno seleccionado no está disponible: {bloqueo.motivo or 'Bloqueo médico'}",
-            "error_codigo": "SLOT_BLOCKED"
-        }), 409
-
-    # 2. Asignar paciente
-    paciente_user_id = None
-    if usuario_actual:
-        paciente_user_id = usuario_actual.id
-        # Si aportó teléfono en la reserva, actualizarlo en el perfil
-        if datos.get('telefono') and usuario_actual.perfil:
-            usuario_actual.perfil.telefono = datos.get('telefono').strip()
-    else:
-        # Modo provisional: registrar en legacy Paciente
-        nombre = datos.get('nombre') or 'Paciente Invitado'
-        telefono = datos.get('telefono') or ''
-        correo = datos.get('correo') or ''
-        leg = Paciente(nombre=nombre, telefono=telefono, correo=correo)
-        db.session.add(leg)
+        db.session.add(nueva_cita)
         db.session.flush()
 
-    codigo_cita = f"CIT-{uuid.uuid4().hex[:6].upper()}"
-
-    nueva_cita = Cita(
-        codigo_cita=codigo_cita,
-        fecha_hora=fecha_obj,
-        fecha_hora_fin=fecha_fin_obj,
-        estado='pendiente',
-        paciente_id=paciente_user_id,
-        doctor_id=doctor_id,
-        servicio_id=servicio_id,
-        sede_id=sede_id,
-        sintomas_paciente=sintomas,
-        creado_por=paciente_user_id or doctor_id
-    )
-
-    db.session.add(nueva_cita)
-    db.session.flush()
-
-    # Auditoría inicial
-    historial = HistorialCita(
-        cita_id=nueva_cita.id,
-        modificado_por=paciente_user_id or doctor_id,
-        estado_nuevo='pendiente',
-        fecha_nueva=fecha_obj,
-        motivo='Reserva inicial generada desde la plataforma web'
-    )
-    db.session.add(historial)
-
-    # Notificación para el paciente
-    if paciente_user_id:
-        notif = Notificacion(
-            usuario_id=paciente_user_id,
+        # Auditoría inicial
+        historial = HistorialCita(
             cita_id=nueva_cita.id,
-            titulo="Cita Agendada",
-            mensaje=f"Tu cita para {servicio.nombre_servicio} quedó registrada para el {fecha_obj.strftime('%d/%m/%Y a las %H:%M')}.",
-            tipo='reserva'
+            modificado_por=paciente_user_id or doctor_id,
+            estado_nuevo='pendiente',
+            fecha_nueva=fecha_obj,
+            motivo='Reserva inicial generada desde la plataforma web'
         )
-        db.session.add(notif)
+        db.session.add(historial)
 
-    db.session.commit()
+        # Notificación para el paciente
+        if paciente_user_id:
+            notif = Notificacion(
+                usuario_id=paciente_user_id,
+                cita_id=nueva_cita.id,
+                titulo="Cita Agendada",
+                mensaje=f"Tu cita para {servicio.nombre_servicio} quedó registrada para el {fecha_obj.strftime('%d/%m/%Y a las %H:%M')}.",
+                tipo='reserva'
+            )
+            db.session.add(notif)
 
-    return jsonify({
-        "mensaje": "Cita agendada exitosamente",
-        "id_cita": nueva_cita.id,
-        "codigo_cita": codigo_cita,
-        "fecha_hora": fecha_obj.strftime('%Y-%m-%d %H:%M'),
-        "servicio": servicio.nombre_servicio,
-        "sede_id": sede_id
-    }), 201
+        db.session.commit()
+
+        return jsonify({
+            "mensaje": "Cita agendada exitosamente",
+            "id_cita": nueva_cita.id,
+            "codigo_cita": codigo_cita,
+            "codigo": codigo_cita,
+            "fecha_hora": fecha_obj.strftime('%Y-%m-%d %H:%M'),
+            "servicio": servicio.nombre_servicio,
+            "sede_id": sede_id
+        }), 201
+
+    except Exception as exc:
+        import traceback
+        err_trace = traceback.format_exc()
+        print(f">> [ERROR agendar_cita]: {err_trace}", flush=True)
+        db.session.rollback()
+        return jsonify({
+            "mensaje": f"Error al procesar la cita: {str(exc)}",
+            "error_detail": str(exc),
+            "traceback": err_trace
+        }), 500
 
 @app.route('/api/citas/mis-citas', methods=['GET'])
 @jwt_required()
