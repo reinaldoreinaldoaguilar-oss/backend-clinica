@@ -272,7 +272,7 @@ def obtener_usuario_actual():
 def index():
     return jsonify({
         "nombre": "API Clínica Urológica Dr. Lisandro Márquez",
-        "version": "3.0.0",
+        "version": "3.2.0",
         "estado": "en_linea",
         "auth_google": True
     }), 200
@@ -688,22 +688,64 @@ def agendar_cita():
                 "error_codigo": "SLOT_BLOCKED"
             }), 409
 
-        # 2. Asignar paciente
+        # 2. Asignar paciente y sincronizar tanto Usuario como Paciente (legacy)
         paciente_user_id = None
+        legacy_id = None
+
         if usuario_actual:
             paciente_user_id = usuario_actual.id
             if datos.get('telefono') and usuario_actual.perfil:
                 usuario_actual.perfil.telefono = datos.get('telefono').strip()
+
+            # Asegurar correspondencia en tabla legacy paciente
+            pac_leg = Paciente.query.filter_by(correo=usuario_actual.correo).first() if usuario_actual.correo else None
+            if not pac_leg:
+                pac_leg = Paciente(
+                    nombre=usuario_actual.nombre or 'Paciente',
+                    telefono=usuario_actual.perfil.telefono if usuario_actual.perfil else (datos.get('telefono') or ''),
+                    correo=usuario_actual.correo or ''
+                )
+                db.session.add(pac_leg)
+                db.session.flush()
+            legacy_id = pac_leg.id
         else:
-            # Modo provisional: registrar en legacy Paciente
             nombre = datos.get('nombre') or datos.get('nombre_paciente') or 'Paciente Invitado'
             telefono = datos.get('telefono') or ''
-            correo = datos.get('correo') or datos.get('correo_paciente') or ''
-            leg = Paciente(nombre=nombre, telefono=telefono, correo=correo)
-            db.session.add(leg)
-            db.session.flush()
+            correo = (datos.get('correo') or datos.get('correo_paciente') or '').lower().strip()
+
+            # Buscar o crear registro legacy
+            pac_leg = Paciente.query.filter_by(correo=correo).first() if correo else None
+            if not pac_leg:
+                pac_leg = Paciente(nombre=nombre, telefono=telefono, correo=correo)
+                db.session.add(pac_leg)
+                db.session.flush()
+            legacy_id = pac_leg.id
+
+            # Buscar o crear Usuario local
+            u_prov = Usuario.query.filter_by(correo=correo).first() if correo else None
+            if not u_prov:
+                u_prov = Usuario(
+                    username=f"guest_{uuid.uuid4().hex[:8]}",
+                    nombre=nombre,
+                    correo=correo or None,
+                    rol='paciente',
+                    activo=True
+                )
+                db.session.add(u_prov)
+                db.session.flush()
+                perfil_prov = PerfilPaciente(usuario_id=u_prov.id, telefono=telefono, politica_privacidad_aceptada=True)
+                db.session.add(perfil_prov)
+                db.session.flush()
+            paciente_user_id = u_prov.id
 
         codigo_cita = f"CIT-{uuid.uuid4().hex[:6].upper()}"
+
+        # Ejecutar DROP CONSTRAINT directo en caso de que aún exista la restricción antigua en PostgreSQL
+        try:
+            db.session.execute(text("ALTER TABLE cita DROP CONSTRAINT IF EXISTS cita_paciente_id_fkey;"))
+            db.session.execute(text("ALTER TABLE cita ALTER COLUMN paciente_id DROP NOT NULL;"))
+        except Exception:
+            pass
 
         nueva_cita = Cita(
             codigo_cita=codigo_cita,
@@ -711,6 +753,7 @@ def agendar_cita():
             fecha_hora_fin=fecha_fin_obj,
             estado='pendiente',
             paciente_id=paciente_user_id,
+            legacy_paciente_id=legacy_id,
             doctor_id=doctor_id,
             servicio_id=servicio_id,
             sede_id=sede_id,
@@ -1442,6 +1485,8 @@ def ejecutar_auto_migraciones():
         "ALTER TABLE usuario ADD COLUMN IF NOT EXISTS activo BOOLEAN DEFAULT true;",
         "ALTER TABLE usuario ADD COLUMN IF NOT EXISTS fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP;",
         "ALTER TABLE usuario ALTER COLUMN password DROP NOT NULL;",
+        "ALTER TABLE cita DROP CONSTRAINT IF EXISTS cita_paciente_id_fkey;",
+        "ALTER TABLE cita ALTER COLUMN paciente_id DROP NOT NULL;",
         "ALTER TABLE cita ADD COLUMN IF NOT EXISTS codigo_cita VARCHAR(30);",
         "ALTER TABLE cita ADD COLUMN IF NOT EXISTS fecha_hora_fin TIMESTAMP;",
         "ALTER TABLE cita ADD COLUMN IF NOT EXISTS sede_id INTEGER;",
