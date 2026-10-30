@@ -37,7 +37,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'secreto_medico_super_seguro_2026_jwt_token_urologia')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30) # Sesión persistente para comodidad del paciente
 
-GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '218889080146-1v3rcqk04m3dchj8g7iu5do3ovq84rll.apps.googleusercontent.com')
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
