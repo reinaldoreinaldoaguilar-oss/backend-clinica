@@ -905,7 +905,9 @@ def obtener_mis_citas():
             "hora": c.fecha_hora.strftime('%H:%M'),
             "estado": c.estado,
             "servicio": c.servicio.nombre_servicio if c.servicio else "Consulta General",
+            "servicio_id": c.servicio_id or (c.servicio.id if c.servicio else 1),
             "duracion": c.servicio.duracion_minutos if c.servicio else 45,
+            "sede_id": c.sede_id or (c.sede.id if c.sede else 1),
             "sede": {
                 "id": c.sede.id if c.sede else None,
                 "nombre": c.sede.nombre if c.sede else "Caracas — Clínica VidaMed",
@@ -1028,9 +1030,53 @@ def reprogramar_cita(id):
     duracion = cita.servicio.duracion_minutos if cita.servicio else 45
     nuevo_fin = nueva_fecha + timedelta(minutes=duracion)
 
-    # Validar conflicto con otras citas (excluyendo la misma cita actual)
+    # 1. Validar disponibilidad del doctor en la sede y fecha seleccionada
+    doctor = Doctor.query.first()
+    sede = Sede.query.get(nueva_sede_id) or cita.sede
+    if doctor and sede:
+        dia_semana = nueva_fecha.weekday() # 0 = Lunes, 6 = Domingo
+        horario_sede = HorarioDoctor.query.filter_by(
+            doctor_id=doctor.id,
+            sede_id=sede.id,
+            dia_semana=dia_semana
+        ).first()
+
+        if not horario_sede or not horario_sede.activo:
+            horarios_activos = HorarioDoctor.query.filter_by(
+                doctor_id=doctor.id,
+                sede_id=sede.id,
+                activo=True
+            ).order_by(HorarioDoctor.dia_semana.asc()).all()
+            dias_nombres = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+            dias_atencion_str = ", ".join([dias_nombres[h.dia_semana] for h in horarios_activos]) if horarios_activos else "No configurado"
+            return jsonify({
+                "mensaje": f"El Dr. Lisandro Márquez no atiende consultas los {dias_nombres[dia_semana]} en {sede.nombre}. Días de atención: {dias_atencion_str}.",
+                "error_codigo": "DAY_NOT_AVAILABLE_FOR_SEDE"
+            }), 400
+
+        # 2. Validar si el doctor tiene un bloqueo de agenda en esa fecha
+        fecha_str = nueva_fecha.strftime('%Y-%m-%d')
+        bloqueo = BloqueoAgenda.query.filter(
+            BloqueoAgenda.doctor_id == doctor.id,
+            BloqueoAgenda.activo == True,
+            or_(
+                and_(BloqueoAgenda.fecha_inicio <= fecha_str, BloqueoAgenda.fecha_fin >= fecha_str),
+                BloqueoAgenda.fecha_inicio == fecha_str
+            )
+        ).filter(
+            or_(BloqueoAgenda.sede_id == None, BloqueoAgenda.sede_id == sede.id)
+        ).first()
+
+        if bloqueo:
+            return jsonify({
+                "mensaje": f"Esta fecha está bloqueada por el doctor ({bloqueo.motivo or 'No disponible'}). Por favor selecciona otra fecha disponible.",
+                "error_codigo": "DATE_BLOCKED_BY_DOCTOR"
+            }), 400
+
+    # 3. Validar conflicto con otras citas (excluyendo la misma cita actual)
     solapada = Cita.query.filter(
         Cita.id != cita.id,
+        Cita.sede_id == nueva_sede_id,
         Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada']),
         Cita.fecha_hora < nuevo_fin,
         or_(
@@ -1041,7 +1087,7 @@ def reprogramar_cita(id):
 
     if solapada:
         return jsonify({
-            "mensaje": "El nuevo horario seleccionado no está disponible. Tu cita original permanece sin cambios.",
+            "mensaje": "El nuevo horario seleccionado ya está reservado por otro paciente. Tu cita original permanece intacta.",
             "error_codigo": "RESCHEDULE_CONFLICT"
         }), 409
 
