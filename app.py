@@ -1002,134 +1002,151 @@ def reprogramar_cita(id):
     Reprogramación atómica: valida que el nuevo horario esté disponible.
     Si falla, la cita original queda intacta al 100%.
     """
-    usuario = obtener_usuario_actual()
-    if not usuario:
-        return jsonify({"mensaje": "Sesión requerida"}), 401
-
-    cita = Cita.query.get_or_404(id)
-
-    es_dueno = (cita.paciente_id == usuario.id)
-    es_doctor_admin = (usuario.rol in ['doctor', 'administrador'])
-
-    if not (es_dueno or es_doctor_admin):
-        return jsonify({"mensaje": "No tienes autorización para reprogramar esta cita"}), 403
-
-    datos = request.get_json() or {}
-    nueva_fecha_hora_str = datos.get('nueva_fecha_hora')
-    nueva_sede_id = datos.get('nueva_sede_id', cita.sede_id)
-    motivo = datos.get('motivo', 'Reprogramada por solicitud')
-
-    if not nueva_fecha_hora_str:
-        return jsonify({"mensaje": "Nueva fecha y hora requeridas"}), 400
-
     try:
-        nueva_fecha = datetime.strptime(nueva_fecha_hora_str, '%Y-%m-%d %H:%M')
-    except ValueError:
-        return jsonify({"mensaje": "Formato de fecha inválido. Usar YYYY-MM-DD HH:MM"}), 400
+        usuario = obtener_usuario_actual()
+        if not usuario:
+            return jsonify({"mensaje": "Sesión requerida"}), 401
 
-    duracion = cita.servicio.duracion_minutos if cita.servicio else 45
-    nuevo_fin = nueva_fecha + timedelta(minutes=duracion)
+        cita = Cita.query.get_or_404(id)
 
-    # 1. Validar disponibilidad del doctor en la sede y fecha seleccionada
-    doctor = Doctor.query.first()
-    sede = Sede.query.get(nueva_sede_id) or cita.sede
-    if doctor and sede:
-        dia_semana = nueva_fecha.weekday() # 0 = Lunes, 6 = Domingo
-        horario_sede = HorarioDoctor.query.filter_by(
-            doctor_id=doctor.id,
-            sede_id=sede.id,
-            dia_semana=dia_semana
-        ).first()
+        es_dueno = (cita.paciente_id == usuario.id)
+        es_doctor_admin = (usuario.rol in ['doctor', 'administrador'])
 
-        if not horario_sede or not horario_sede.activo:
-            horarios_activos = HorarioDoctor.query.filter_by(
-                doctor_id=doctor.id,
-                sede_id=sede.id,
-                activo=True
-            ).order_by(HorarioDoctor.dia_semana.asc()).all()
-            dias_nombres = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
-            dias_atencion_str = ", ".join([dias_nombres[h.dia_semana] for h in horarios_activos]) if horarios_activos else "No configurado"
-            return jsonify({
-                "mensaje": f"El Dr. Lisandro Márquez no atiende consultas los {dias_nombres[dia_semana]} en {sede.nombre}. Días de atención: {dias_atencion_str}.",
-                "error_codigo": "DAY_NOT_AVAILABLE_FOR_SEDE"
-            }), 400
+        if not (es_dueno or es_doctor_admin):
+            return jsonify({"mensaje": "No tienes autorización para reprogramar esta cita"}), 403
 
-        # 2. Validar si el doctor tiene un bloqueo de agenda en esa fecha
-        fecha_str = nueva_fecha.strftime('%Y-%m-%d')
-        bloqueo = BloqueoAgenda.query.filter(
-            BloqueoAgenda.doctor_id == doctor.id,
-            BloqueoAgenda.activo == True,
+        datos = request.get_json() or {}
+        nueva_fecha_hora_str = datos.get('nueva_fecha_hora')
+        nueva_sede_id = datos.get('nueva_sede_id', cita.sede_id)
+        motivo = datos.get('motivo', 'Reprogramada por solicitud')
+
+        if not nueva_fecha_hora_str:
+            return jsonify({"mensaje": "Nueva fecha y hora requeridas"}), 400
+
+        try:
+            nueva_fecha = datetime.strptime(nueva_fecha_hora_str, '%Y-%m-%d %H:%M')
+        except ValueError:
+            return jsonify({"mensaje": "Formato de fecha inválido. Usar YYYY-MM-DD HH:MM"}), 400
+
+        duracion = cita.servicio.duracion_minutos if cita.servicio else 45
+        nuevo_fin = nueva_fecha + timedelta(minutes=duracion)
+
+        # 1. Validar disponibilidad del doctor en la sede y fecha seleccionada
+        sede = Sede.query.get(nueva_sede_id) or cita.sede
+        if sede:
+            doctor = Doctor.query.first()
+            if doctor:
+                dia_semana = nueva_fecha.weekday() # 0 = Lunes, 6 = Domingo
+                horario_sede = HorarioDoctor.query.filter_by(
+                    doctor_id=doctor.id,
+                    sede_id=sede.id,
+                    dia_semana=dia_semana
+                ).first()
+
+                if not horario_sede or not horario_sede.activo:
+                    horarios_activos = HorarioDoctor.query.filter_by(
+                        doctor_id=doctor.id,
+                        sede_id=sede.id,
+                        activo=True
+                    ).order_by(HorarioDoctor.dia_semana.asc()).all()
+                    dias_nombres = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+                    dias_atencion_str = ", ".join([dias_nombres[h.dia_semana] for h in horarios_activos]) if horarios_activos else "No configurado"
+                    return jsonify({
+                        "mensaje": f"El Dr. Lisandro Márquez no atiende consultas los {dias_nombres[dia_semana]} en {sede.nombre}. Días de atención: {dias_atencion_str}.",
+                        "error_codigo": "DAY_NOT_AVAILABLE_FOR_SEDE"
+                    }), 400
+
+            # 2. Validar si el doctor tiene un bloqueo de agenda en esa fecha y sede
+            bloqueo = BloqueoAgenda.query.filter(
+                BloqueoAgenda.fecha_inicio < nuevo_fin,
+                BloqueoAgenda.fecha_fin > nueva_fecha,
+                or_(BloqueoAgenda.sede_id == None, BloqueoAgenda.sede_id == sede.id)
+            ).first()
+
+            if bloqueo:
+                return jsonify({
+                    "mensaje": f"Esta fecha está bloqueada por el doctor ({bloqueo.motivo or 'Bloqueo médico'}). Por favor selecciona otra fecha disponible.",
+                    "error_codigo": "DATE_BLOCKED_BY_DOCTOR"
+                }), 400
+
+        # 3. Validar conflicto con otras citas en la misma sede (excluyendo la misma cita actual)
+        solapada = Cita.query.filter(
+            Cita.id != cita.id,
+            Cita.sede_id == nueva_sede_id,
+            Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada']),
+            Cita.fecha_hora < nuevo_fin,
             or_(
-                and_(BloqueoAgenda.fecha_inicio <= fecha_str, BloqueoAgenda.fecha_fin >= fecha_str),
-                BloqueoAgenda.fecha_inicio == fecha_str
+                Cita.fecha_hora_fin > nueva_fecha,
+                and_(Cita.fecha_hora_fin == None, Cita.fecha_hora + timedelta(minutes=45) > nueva_fecha)
             )
-        ).filter(
-            or_(BloqueoAgenda.sede_id == None, BloqueoAgenda.sede_id == sede.id)
         ).first()
 
-        if bloqueo:
+        if solapada:
             return jsonify({
-                "mensaje": f"Esta fecha está bloqueada por el doctor ({bloqueo.motivo or 'No disponible'}). Por favor selecciona otra fecha disponible.",
-                "error_codigo": "DATE_BLOCKED_BY_DOCTOR"
-            }), 400
+                "mensaje": "El nuevo horario seleccionado ya está reservado por otro paciente. Tu cita original permanece intacta.",
+                "error_codigo": "RESCHEDULE_CONFLICT"
+            }), 409
 
-    # 3. Validar conflicto con otras citas (excluyendo la misma cita actual)
-    solapada = Cita.query.filter(
-        Cita.id != cita.id,
-        Cita.sede_id == nueva_sede_id,
-        Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada']),
-        Cita.fecha_hora < nuevo_fin,
-        or_(
-            Cita.fecha_hora_fin > nueva_fecha,
-            and_(Cita.fecha_hora_fin == None, Cita.fecha_hora + timedelta(minutes=45) > nueva_fecha)
-        )
-    ).first()
+        fecha_anterior = cita.fecha_hora
+        cita.fecha_hora = nueva_fecha
+        cita.fecha_hora_fin = nuevo_fin
+        cita.sede_id = nueva_sede_id
+        cita.estado = 'pendiente' # Pasa a pendiente para validación del nuevo turno
 
-    if solapada:
-        return jsonify({
-            "mensaje": "El nuevo horario seleccionado ya está reservado por otro paciente. Tu cita original permanece intacta.",
-            "error_codigo": "RESCHEDULE_CONFLICT"
-        }), 409
-
-    fecha_anterior = cita.fecha_hora
-    cita.fecha_hora = nueva_fecha
-    cita.fecha_hora_fin = nuevo_fin
-    cita.sede_id = nueva_sede_id
-    cita.estado = 'pendiente' # Pasa a pendiente para validación del nuevo turno
-
-    # Auditoría
-    historial = HistorialCita(
-        cita_id=cita.id,
-        modificado_por=usuario.id,
-        estado_anterior='reprogramada',
-        estado_nuevo='pendiente',
-        fecha_anterior=fecha_anterior,
-        fecha_nueva=nueva_fecha,
-        motivo=motivo
-    )
-    db.session.add(historial)
-
-    if cita.paciente_id:
-        notif = Notificacion(
-            usuario_id=cita.paciente_id,
+        # Auditoría
+        historial = HistorialCita(
             cita_id=cita.id,
-            titulo="Cita Reprogramada",
-            mensaje=f"Tu cita fue movida exitosamente para el {nueva_fecha.strftime('%d/%m/%Y a las %H:%M')}.",
-            tipo='reprogramacion'
+            modificado_por=usuario.id,
+            estado_anterior='reprogramada',
+            estado_nuevo='pendiente',
+            fecha_anterior=fecha_anterior,
+            fecha_nueva=nueva_fecha,
+            motivo=motivo
         )
-        db.session.add(notif)
+        db.session.add(historial)
 
-    db.session.commit()
-    return jsonify({
-        "mensaje": "Cita reprogramada exitosamente",
-        "id": cita.id,
-        "nueva_fecha_hora": nueva_fecha.strftime('%Y-%m-%d %H:%M')
-    }), 200
+        # Notificación al paciente
+        if cita.paciente_id:
+            notif = Notificacion(
+                usuario_id=cita.paciente_id,
+                cita_id=cita.id,
+                titulo="Cita Reprogramada",
+                mensaje=f"Tu cita fue movida exitosamente para el {nueva_fecha.strftime('%d/%m/%Y a las %H:%M')} en {sede.nombre if sede else 'la clínica'}.",
+                tipo='reprogramacion'
+            )
+            db.session.add(notif)
 
-# ==========================================
-# 7. PORTAL DEL DOCTOR Y GESTIÓN CLÍNICA
-# ==========================================
+        # Notificación a los doctores y administradores
+        doc_users = Usuario.query.filter(Usuario.rol.in_(['doctor', 'administrador'])).all()
+        paciente_nombre = cita.paciente.nombre if cita.paciente else (cita.legacy_paciente.nombre if cita.legacy_paciente else "Paciente")
+        for doc in doc_users:
+            if doc.id != usuario.id:
+                db.session.add(Notificacion(
+                    usuario_id=doc.id,
+                    cita_id=cita.id,
+                    titulo="Cita Reprogramada por Paciente",
+                    mensaje=f"El paciente {paciente_nombre} movió su cita para el {nueva_fecha.strftime('%d/%m/%Y a las %H:%M')} en {sede.nombre if sede else 'la sede'}.",
+                    tipo='reprogramacion'
+                ))
 
+        db.session.commit()
+        return jsonify({
+            "mensaje": "Cita reprogramada exitosamente",
+            "id": cita.id,
+            "nueva_fecha_hora": nueva_fecha.strftime('%Y-%m-%d %H:%M'),
+            "sede": sede.nombre if sede else "Sede Médica"
+        }), 200
+
+    except Exception as exc:
+        import traceback
+        err_trace = traceback.format_exc()
+        print(f">> [ERROR reprogramar_cita]: {err_trace}", flush=True)
+        db.session.rollback()
+        return jsonify({
+            "mensaje": f"Error al procesar la reprogramación: {str(exc)}",
+            "error_detail": str(exc),
+            "traceback": err_trace
+        }), 500
 @app.route('/api/citas', methods=['GET'])
 @jwt_required()
 def obtener_todas_las_citas_doctor():
