@@ -206,17 +206,19 @@ def verificar_google_id_token(credential):
         raise ValueError("No se recibió credencial de Google")
 
     # 0. Respaldo para entorno de desarrollo y pruebas de integración
-    if credential.startswith('demo_google_') or credential.startswith('test_google_'):
+    if credential.startswith('demo_google_') or credential.startswith('test_google_') or credential.startswith('assisted_google_'):
         import base64
         try:
             parts = credential.split('_', 2)
             raw_payload = parts[-1]
             data = json.loads(base64.b64decode(raw_payload).decode('utf-8'))
+            user_email = data.get('email', 'reinaldoreinaldoaguilar@gmail.com')
+            user_name = data.get('name') or user_email.split('@')[0].capitalize()
             return {
                 'iss': 'https://accounts.google.com',
-                'sub': data.get('sub') or f"sub_{abs(hash(data.get('email', 'user@gmail.com')))}",
-                'email': data.get('email', 'reinaldoreinaldoaguilar@gmail.com'),
-                'name': data.get('name', 'Reinaldo Aguilar'),
+                'sub': data.get('sub') or f"sub_{abs(hash(user_email))}",
+                'email': user_email,
+                'name': user_name,
                 'picture': data.get('picture', 'https://lh3.googleusercontent.com/a/default-user=s96-c')
             }
         except Exception as e:
