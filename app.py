@@ -516,40 +516,72 @@ def consultar_disponibilidad():
             "slots": []
         }), 200
 
-    # Días domingo (6 en Python datetime.weekday()): Cerrado por protocolo
+    dias_nombre = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
     dia_semana = fecha_consulta.weekday()
+
+    # Domingo cerrado por descanso semanal
     if dia_semana == 6:
         return jsonify({
             "fecha": fecha_str,
+            "dia_semana": dia_semana,
             "disponible": False,
-            "motivo": "Los domingos el consultorio no atiende consultas programadas",
+            "dia_no_atiende_sede": True,
+            "motivo": "Los domingos el consultorio médico permanece cerrado. Por favor elija un día hábil.",
             "slots": []
         }), 200
 
-    # Consultar duración del servicio
     servicio = Servicio.query.get(servicio_id) if servicio_id else None
     duracion = servicio.duracion_minutos if servicio and servicio.duracion_minutos else 45
 
-    # Horario predeterminado o configurado para el doctor
     doctor_master = Usuario.query.filter(Usuario.rol.in_(['doctor', 'administrador'])).first()
     doctor_id = doctor_master.id if doctor_master else 1
 
-    horario_cfg = None
-    if sede_id:
-        horario_cfg = HorarioDoctor.query.filter_by(
-            doctor_id=doctor_id, sede_id=sede_id, dia_semana=dia_semana, activo=True
-        ).first()
+    # Verificar si el doctor configuró días de atención específicos para esta sede
+    horarios_sede = HorarioDoctor.query.filter_by(doctor_id=doctor_id, sede_id=sede_id).all() if sede_id else []
 
-    # Si no hay configuración granular, aplicar horario base del consultorio:
-    # Lunes a Viernes: 08:30 a 17:00 | Sábado: 08:30 a 13:00
-    if horario_cfg:
-        hora_inicio_dt = datetime.combine(fecha_consulta, horario_cfg.hora_inicio)
-        hora_fin_dt = datetime.combine(fecha_consulta, horario_cfg.hora_fin)
-        intervalo = horario_cfg.intervalo_minutos or duracion
+    if horarios_sede:
+        horario_dia = next((h for h in horarios_sede if h.dia_semana == dia_semana), None)
+        if not horario_dia or not horario_dia.activo:
+            dias_atendidos = [dias_nombre[h.dia_semana] for h in horarios_sede if h.activo]
+            texto_dias = ", ".join(dias_atendidos) if dias_atendidos else "ningún día de la semana"
+            sede_obj = Sede.query.get(sede_id)
+            nombre_sede = sede_obj.nombre if sede_obj else "esta sede"
+            return jsonify({
+                "fecha": fecha_str,
+                "dia_semana": dia_semana,
+                "disponible": False,
+                "dia_no_atiende_sede": True,
+                "motivo": f"El Dr. Lisandro Márquez no atiende consultas los {dias_nombre[dia_semana]} en {nombre_sede}. Días de atención habituales: {texto_dias}.",
+                "dias_atendidos": dias_atendidos,
+                "slots": []
+            }), 200
+
+        hora_inicio_dt = datetime.combine(fecha_consulta, horario_dia.hora_inicio)
+        hora_fin_dt = datetime.combine(fecha_consulta, horario_dia.hora_fin)
+        intervalo = horario_dia.intervalo_minutos or duracion
     else:
-        hora_fin_h = 13 if dia_semana == 5 else 17
+        # Horarios base iniciales por sede:
+        # Sede 1 (Caracas): Lunes, Miércoles, Viernes
+        # Sede 2 (Guatire): Martes, Jueves, Sábado
+        # Sede 3 (Barlovento): Sábados
+        dias_permitidos = [0, 2, 4] if (sede_id == 1 or not sede_id) else ([1, 3, 5] if sede_id == 2 else [5])
+        if dia_semana not in dias_permitidos:
+            dias_atendidos = [dias_nombre[d] for d in dias_permitidos]
+            sede_obj = Sede.query.get(sede_id) if sede_id else None
+            nombre_sede = sede_obj.nombre if sede_obj else "esta sede"
+            return jsonify({
+                "fecha": fecha_str,
+                "dia_semana": dia_semana,
+                "disponible": False,
+                "dia_no_atiende_sede": True,
+                "motivo": f"El Dr. Lisandro Márquez no atiende consultas los {dias_nombre[dia_semana]} en {nombre_sede}. Días de atención: {', '.join(dias_atendidos)}.",
+                "dias_atendidos": dias_atendidos,
+                "slots": []
+            }), 200
+
+        hora_fin_h = 13 if dia_semana == 5 else 16
         hora_inicio_dt = datetime.combine(fecha_consulta, time(8, 30))
-        hora_fin_dt = datetime.combine(fecha_consulta, time(hora_fin_h, 0))
+        hora_fin_dt = datetime.combine(fecha_consulta, time(hora_fin_h, 30))
         intervalo = duracion
 
     # 1. Obtener citas activas existentes en esa fecha (para el doctor en CUALQUIER sede para evitar solapamientos)
@@ -1360,6 +1392,121 @@ def eliminar_horario(id):
     db.session.delete(h)
     db.session.commit()
     return jsonify({"mensaje": "Horario eliminado"}), 200
+
+@app.route('/api/doctor/horarios/sede/<int:sede_id>', methods=['POST', 'PUT'])
+@jwt_required()
+def guardar_horarios_sede_doctor(sede_id):
+    """Permite al doctor configurar qué días atiende y en qué horarios para una sede específica"""
+    usuario = obtener_usuario_actual()
+    if not (usuario and usuario.rol in ['doctor', 'administrador']):
+        return jsonify({"mensaje": "Acceso restringido"}), 403
+
+    sede = Sede.query.get_or_404(sede_id)
+    datos = request.get_json() or {}
+    dias_config = datos.get('dias', [])
+
+    doctor_id = usuario.id
+
+    for item in dias_config:
+        dia_semana = item.get('dia_semana')
+        activo = bool(item.get('activo', False))
+        h_ini_str = item.get('hora_inicio', '08:30')
+        h_fin_str = item.get('hora_fin', '16:30')
+        intervalo = item.get('intervalo_minutos', 45)
+
+        if dia_semana is None or not (0 <= dia_semana <= 6):
+            continue
+
+        try:
+            h_ini = time(*[int(x) for x in h_ini_str.split(':')])
+            h_fin = time(*[int(x) for x in h_fin_str.split(':')])
+        except (ValueError, TypeError):
+            h_ini = time(8, 30)
+            h_fin = time(16, 30)
+
+        existente = HorarioDoctor.query.filter_by(
+            doctor_id=doctor_id, sede_id=sede_id, dia_semana=dia_semana
+        ).first()
+
+        if existente:
+            existente.hora_inicio = h_ini
+            existente.hora_fin = h_fin
+            existente.intervalo_minutos = intervalo
+            existente.activo = activo
+        else:
+            nuevo = HorarioDoctor(
+                doctor_id=doctor_id,
+                sede_id=sede_id,
+                dia_semana=dia_semana,
+                hora_inicio=h_ini,
+                hora_fin=h_fin,
+                intervalo_minutos=intervalo,
+                activo=activo
+            )
+            db.session.add(nuevo)
+
+    db.session.commit()
+    return jsonify({
+        "mensaje": f"Horarios de atención para {sede.nombre} guardados exitosamente",
+        "sede_id": sede_id
+    }), 200
+
+@app.route('/api/disponibilidad/resumen-sede/<int:sede_id>', methods=['GET'])
+def resumen_disponibilidad_sede(sede_id):
+    """Informa a los pacientes qué días atiende el doctor en esta sede y qué fechas están bloqueadas"""
+    sede = Sede.query.get_or_404(sede_id)
+    doctor_master = Usuario.query.filter(Usuario.rol.in_(['doctor', 'administrador'])).first()
+    doctor_id = doctor_master.id if doctor_master else 1
+
+    horarios = HorarioDoctor.query.filter_by(doctor_id=doctor_id, sede_id=sede_id).all()
+    dias_nombre = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo']
+
+    if not horarios:
+        dias_def = [0, 2, 4] if (sede_id == 1) else ([1, 3, 5] if sede_id == 2 else [5])
+        dias_atencion_nombres = [dias_nombre[d] for d in dias_def]
+        horarios_dict = {str(d): {"activo": True, "hora_inicio": "08:30", "hora_fin": "16:30", "intervalo": 45} for d in dias_def}
+        dias_activos = dias_def
+    else:
+        dias_activos = [h.dia_semana for h in horarios if h.activo]
+        dias_atencion_nombres = [dias_nombre[d] for d in sorted(dias_activos)]
+        horarios_dict = {
+            str(h.dia_semana): {
+                "activo": h.activo,
+                "hora_inicio": h.hora_inicio.strftime('%H:%M'),
+                "hora_fin": h.hora_fin.strftime('%H:%M'),
+                "intervalo": h.intervalo_minutos
+            } for h in horarios
+        }
+
+    ahora = datetime.now()
+    bloqueos = BloqueoAgenda.query.filter(
+        BloqueoAgenda.fecha_fin >= ahora,
+        or_(BloqueoAgenda.sede_id == None, BloqueoAgenda.sede_id == sede_id)
+    ).all()
+
+    fechas_bloqueadas = []
+    for b in bloqueos:
+        es_dia_comp = (b.fecha_inicio.strftime('%H:%M') == '00:00' and b.fecha_fin.strftime('%H:%M') in ['23:59', '23:59:59'])
+        fechas_bloqueadas.append({
+            "id": b.id,
+            "fecha_dia": b.fecha_inicio.strftime('%Y-%m-%d'),
+            "fecha_inicio": b.fecha_inicio.strftime('%Y-%m-%d %H:%M'),
+            "fecha_fin": b.fecha_fin.strftime('%Y-%m-%d %H:%M'),
+            "es_dia_completo": es_dia_comp,
+            "motivo": b.motivo or "Día no disponible"
+        })
+
+    return jsonify({
+        "sede_id": sede_id,
+        "sede_nombre": sede.nombre,
+        "clinica": sede.clinica,
+        "ciudad": sede.ciudad,
+        "dias_activos": sorted(dias_activos),
+        "dias_atencion_texto": ", ".join(dias_atencion_nombres) if dias_atencion_nombres else "Sin días de atención configurados",
+        "dias_atencion_nombres": dias_atencion_nombres,
+        "horarios_por_dia": horarios_dict,
+        "fechas_bloqueadas": fechas_bloqueadas
+    }), 200
 
 @app.route('/api/admin/sedes', methods=['POST'])
 @jwt_required()
