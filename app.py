@@ -272,7 +272,7 @@ def obtener_usuario_actual():
 def index():
     return jsonify({
         "nombre": "API Clínica Urológica Dr. Lisandro Márquez",
-        "version": "3.2.0",
+        "version": "3.3.0",
         "estado": "en_linea",
         "auth_google": True
     }), 200
@@ -560,11 +560,31 @@ def consultar_disponibilidad():
         Cita.estado.in_(['pendiente', 'confirmada', 'presente', 'Pendiente', 'Confirmada'])
     ).all()
 
-    # 2. Obtener bloqueos de agenda para ese día
-    bloqueos = BloqueoAgenda.query.filter(
+    # 2. Obtener bloqueos de agenda para ese día (filtrando por sede si corresponde)
+    bloqueos_query = BloqueoAgenda.query.filter(
         BloqueoAgenda.fecha_inicio <= fin_dia,
         BloqueoAgenda.fecha_fin >= inicio_dia
-    ).all()
+    )
+    if sede_id:
+        bloqueos = bloqueos_query.filter(or_(BloqueoAgenda.sede_id == None, BloqueoAgenda.sede_id == sede_id)).all()
+    else:
+        bloqueos = bloqueos_query.all()
+
+    # Si el doctor bloqueó el día completo o la jornada
+    bloqueo_dia_completo = next((b for b in bloqueos if b.fecha_inicio <= hora_inicio_dt and b.fecha_fin >= hora_fin_dt), None)
+    if not bloqueo_dia_completo:
+        bloqueo_dia_completo = next((b for b in bloqueos if b.fecha_inicio <= inicio_dia and b.fecha_fin >= fin_dia), None)
+
+    if bloqueo_dia_completo:
+        motivo_bloqueo = bloqueo_dia_completo.motivo or "El Dr. Lisandro Márquez no atiende pacientes en esta fecha"
+        return jsonify({
+            "fecha": fecha_str,
+            "dia_semana": dia_semana,
+            "disponible": False,
+            "dia_bloqueado": True,
+            "motivo": f"El Dr. Lisandro Márquez indicó que no atenderá consultas en esta fecha ({motivo_bloqueo})",
+            "slots": []
+        }), 200
 
     # 3. Generar franjas (slots)
     ahora = datetime.now()
@@ -612,11 +632,22 @@ def consultar_disponibilidad():
         cursor += timedelta(minutes=intervalo)
 
     hay_disponibles = any(s["disponible"] for s in slots)
+    todos_bloqueados_por_doctor = bool(slots and all(not s["disponible"] for s in slots) and bloqueos)
+    motivo_general = None
+    if not hay_disponibles:
+        if todos_bloqueados_por_doctor and bloqueos:
+            motivo_general = f"El Dr. Lisandro Márquez indicó que no atenderá pacientes en esta fecha ({bloqueos[0].motivo or 'Día no disponible'})"
+        elif slots and all("reservado por otro" in (s.get("motivo") or "") for s in slots):
+            motivo_general = "Todos los turnos de este día ya han sido reservados. Por favor seleccione otra fecha."
+        else:
+            motivo_general = "No hay turnos disponibles para esta fecha."
 
     return jsonify({
         "fecha": fecha_str,
         "dia_semana": dia_semana,
         "disponible": hay_disponibles,
+        "dia_bloqueado": bool(todos_bloqueados_por_doctor or bloqueo_dia_completo),
+        "motivo": motivo_general,
         "duracion_servicio": duracion,
         "slots": slots
     }), 200
@@ -1176,32 +1207,79 @@ def gestionar_bloqueos():
 
     if request.method == 'POST':
         datos = request.get_json() or {}
-        try:
-            f_ini = datetime.strptime(datos.get('fecha_inicio'), '%Y-%m-%d %H:%M')
-            f_fin = datetime.strptime(datos.get('fecha_fin'), '%Y-%m-%d %H:%M')
-        except (ValueError, TypeError):
-            return jsonify({"mensaje": "Formato de fechas debe ser YYYY-MM-DD HH:MM"}), 400
+        
+        # Permitir tanto fecha única (día completo) como rango fecha_inicio / fecha_fin
+        fecha_dia = datos.get('fecha') or datos.get('fecha_dia')
+        if fecha_dia and not datos.get('fecha_inicio'):
+            try:
+                f_ini = datetime.strptime(fecha_dia.strip() + ' 00:00', '%Y-%m-%d %H:%M')
+                f_fin = datetime.strptime(fecha_dia.strip() + ' 23:59', '%Y-%m-%d %H:%M')
+            except (ValueError, TypeError):
+                return jsonify({"mensaje": "Formato de fecha debe ser YYYY-MM-DD"}), 400
+        else:
+            try:
+                f_ini = datetime.strptime(datos.get('fecha_inicio'), '%Y-%m-%d %H:%M')
+                f_fin = datetime.strptime(datos.get('fecha_fin'), '%Y-%m-%d %H:%M')
+            except (ValueError, TypeError):
+                return jsonify({"mensaje": "Formato de fechas debe ser YYYY-MM-DD HH:MM"}), 400
 
         bloqueo = BloqueoAgenda(
             doctor_id=usuario.id,
             sede_id=datos.get('sede_id'),
             fecha_inicio=f_ini,
             fecha_fin=f_fin,
-            motivo=datos.get('motivo', 'Compromiso quirúrgico / Vacaciones'),
+            motivo=datos.get('motivo', 'El Dr. Lisandro Márquez no atiende pacientes este día'),
             creado_por=usuario.id
         )
         db.session.add(bloqueo)
         db.session.commit()
-        return jsonify({"mensaje": "Período bloqueado en la agenda", "id": bloqueo.id}), 201
+        return jsonify({
+            "mensaje": "Fecha bloqueada exitosamente en la agenda del doctor",
+            "id": bloqueo.id,
+            "fecha_dia": f_ini.strftime('%Y-%m-%d')
+        }), 201
 
     bloqueos = BloqueoAgenda.query.order_by(BloqueoAgenda.fecha_inicio.asc()).all()
-    return jsonify([{
-        "id": b.id,
-        "fecha_inicio": b.fecha_inicio.strftime('%Y-%m-%d %H:%M'),
-        "fecha_fin": b.fecha_fin.strftime('%Y-%m-%d %H:%M'),
-        "motivo": b.motivo or "Bloqueo Médico",
-        "sede_id": b.sede_id
-    } for b in bloqueos]), 200
+    resultado = []
+    for b in bloqueos:
+        sede_obj = Sede.query.get(b.sede_id) if b.sede_id else None
+        es_dia_completo = (b.fecha_inicio.strftime('%H:%M') == '00:00' and b.fecha_fin.strftime('%H:%M') in ['23:59', '23:59:59'])
+        resultado.append({
+            "id": b.id,
+            "fecha_inicio": b.fecha_inicio.strftime('%Y-%m-%d %H:%M'),
+            "fecha_fin": b.fecha_fin.strftime('%Y-%m-%d %H:%M'),
+            "fecha_dia": b.fecha_inicio.strftime('%Y-%m-%d'),
+            "es_dia_completo": es_dia_completo,
+            "motivo": b.motivo or "No atiende pacientes este día",
+            "sede_id": b.sede_id,
+            "sede_nombre": sede_obj.nombre if sede_obj else "Todas las sedes"
+        })
+    return jsonify(resultado), 200
+
+@app.route('/api/fechas-bloqueadas', methods=['GET'])
+def fechas_bloqueadas():
+    """
+    Lista pública de fechas bloqueadas por el doctor para el calendario de reservas.
+    """
+    bloqueos = BloqueoAgenda.query.filter(
+        BloqueoAgenda.fecha_fin >= datetime.now()
+    ).order_by(BloqueoAgenda.fecha_inicio.asc()).all()
+    
+    lista = []
+    for b in bloqueos:
+        sede_obj = Sede.query.get(b.sede_id) if b.sede_id else None
+        es_dia_completo = (b.fecha_inicio.strftime('%H:%M') == '00:00' and b.fecha_fin.strftime('%H:%M') in ['23:59', '23:59:59'])
+        lista.append({
+            "id": b.id,
+            "fecha_inicio": b.fecha_inicio.strftime('%Y-%m-%d %H:%M'),
+            "fecha_fin": b.fecha_fin.strftime('%Y-%m-%d %H:%M'),
+            "fecha_dia": b.fecha_inicio.strftime('%Y-%m-%d'),
+            "es_dia_completo": es_dia_completo,
+            "motivo": b.motivo or "El Dr. Lisandro Márquez no atiende pacientes en esta fecha",
+            "sede_id": b.sede_id,
+            "sede_nombre": sede_obj.nombre if sede_obj else "Todas las sedes"
+        })
+    return jsonify(lista), 200
 
 @app.route('/api/doctor/horarios', methods=['GET', 'POST'])
 @jwt_required()
