@@ -840,6 +840,7 @@ def agendar_cita():
         }), 500
 
 @app.route('/api/citas/mis-citas', methods=['GET'])
+@app.route('/api/paciente/mis-citas', methods=['GET'])
 @jwt_required()
 def obtener_mis_citas():
     """Devuelve las citas del paciente autenticado divididas en próximas e historial"""
