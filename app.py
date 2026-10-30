@@ -762,6 +762,14 @@ def obtener_mis_citas():
         return jsonify({"mensaje": "Sesión requerida"}), 401
 
     citas = Cita.query.filter_by(paciente_id=usuario.id).order_by(Cita.fecha_hora.desc()).all()
+
+    if not citas and usuario.correo:
+        legacy = Paciente.query.filter_by(correo=usuario.correo).first()
+        if legacy:
+            citas = Cita.query.filter_by(legacy_paciente_id=legacy.id).order_by(Cita.fecha_hora.desc()).all()
+            for c in citas:
+                c.paciente_id = usuario.id
+            db.session.commit()
     ahora = datetime.now()
 
     proximas = []
